@@ -109,5 +109,13 @@ python train.py \
 If you find this data annotations helpful, please cite our paper:
 
 ```bibtex
-
+@inproceedings{valente25_interspeech,
+      title = {{Clinical Annotations for Automatic Stuttering Severity Assessment}},
+      author = {Ana Valente and Rufael Marew and Hawau Toyin and Hamdan Al-Ali and Anelise Bohnen and Inma Becerra and Elsa Soares and Gonçalo Leal and Hanan Aldarmaki},
+      year = {2025},
+      booktitle = {{Interspeech 2025}},
+      pages = {4318--4322},
+      doi = {10.21437/Interspeech.2025-1916},
+      issn = {2958-1796},
+      }
 ```
