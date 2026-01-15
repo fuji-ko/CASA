@@ -12,28 +12,27 @@ The ELAN program's workspace (referred to as Annotation Mode) consists of an are
 
 ### Step-by-step on ELAN program to analyze and characterize stuttering moment
 
-1. The files are available [here](https://mbzuaiac-my.sharepoint.com/personal/hanan_aldarmaki_mbzuai_ac_ae/Documents/Forms/All.aspx?web=1&FolderCTID=0x012000DADF2E9ADCCDF147908DB396B9DBE845&id=%2Fpersonal%2Fhanan%5Faldarmaki%5Fmbzuai%5Fac%5Fae%2FDocuments%2FStutterBank%2FFluencyBank%2DData%2FVoices%2DAWS)
 
-2. Download the files for your computer;
+1. Download the files for your computer;
 
-3. Select an *.eaf file
+2. Select an *.eaf file
 ![ELAN workspace interface](assets/images/protocol-001.jpg)
 
-4. Add a new tier (Tier-Add New Tier) and name it (e.g., “stuttering moments”).
+3. Add a new tier (Tier-Add New Tier) and name it (e.g., “stuttering moments”).
 ![ELAN workspace interface](assets/images/protocol-002.jpg)
 
-5. Add another tier named “Doubts”. This tier allows you to write down any doubts that arise during certain moments of stuttering.
+4. Add another tier named “Doubts”. This tier allows you to write down any doubts that arise during certain moments of stuttering.
 
-6. Play the speech sample one time to familiarize with it;
+5. Play the speech sample one time to familiarize with it;
 
-7. Select each stuttering event by dragging the cursor along the stuttering moment. Each selected moment could be played again;
+6. Select each stuttering event by dragging the cursor along the stuttering moment. Each selected moment could be played again;
 ![ELAN workspace interface](assets/images/protocol-003.jpg)
 
-8. It should be used the information of the waveform to make a reliable identification of stuttering events. It is recommended to use the zoom function on the waveform (between 300% and 500%, stereo channels, merged) to improve visualization, as the waveform provided by the ELAN software has low amplitude. In case of doubt, the examiner may open the full speech sample or the selected segment with the Praat software.
+7. It should be used the information of the waveform to make a reliable identification of stuttering events. It is recommended to use the zoom function on the waveform (between 300% and 500%, stereo channels, merged) to improve visualization, as the waveform provided by the ELAN software has low amplitude. In case of doubt, the examiner may open the full speech sample or the selected segment with the Praat software.
     a. The duration of repeated movements should be measured from the point where the repeated sound begins until the cessation of the repeated movement. The following examples illustrate the start and end of the stuttering moment (represented by []): “He [we-we-we] went to the beach” or “I [don't-don't-don't] want to go home.”
     b. For stuttering moments that contain fixed postures (i.e., prolongations or blocks), the start should be considered the point where the disfluent sound begins, and the end of the moment occurs when the following sound begins. The following examples illustrate the start and end of the stuttering moment (represented by []): “I saw a [ssssssss]nake” or “That[______] tree is beautiful.”
 
-9. With the right bottom, select “new annotation here” and write in the tier the core behavior classification, the secondary behavior classification and the classification of the tension degree, separated by “;”
+8. With the right bottom, select “new annotation here” and write in the tier the core behavior classification, the secondary behavior classification and the classification of the tension degree, separated by “;”
 ![ELAN workspace interface](assets/images/protocol-005.jpg)
 
     **Core behaviors** can be classified using the following categories (LBDL taxonomy):
@@ -59,9 +58,9 @@ The ELAN program's workspace (referred to as Annotation Mode) consists of an are
     - 2: Moderate degree of tension, indicating that signs of tension areimmediately distracting and produced with visible effort;
     - 3: Severe degree of tension, indicating that signs of tension are highlydistracting and produced with significant effort
 
-10. The rater could modify the annotation; with the right bottom, select “ModifyAnnotation Value” and add a new annotation value.
+9. The rater could modify the annotation; with the right bottom, select “ModifyAnnotation Value” and add a new annotation value.
 
-11. The rater could also modify the length of the annotation. The best way to do that is on the “segmentation mode” (Options-Segmentation Mode). The tier where the annotations are should be selected (double click on it) and the annotation becomes green. By dragging the arrow, it is possible to change the beggining and end of each annotation.
+10. The rater could also modify the length of the annotation. The best way to do that is on the “segmentation mode” (Options-Segmentation Mode). The tier where the annotations are should be selected (double click on it) and the annotation becomes green. By dragging the arrow, it is possible to change the beggining and end of each annotation.
 
 ![ELAN workspace interface](assets/images/protocol-006.jpg)
 ![ELAN workspace interface](assets/images/protocol-007.jpg)
