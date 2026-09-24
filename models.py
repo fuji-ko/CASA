@@ -13,7 +13,8 @@ from configs import AudioModelConfig, VideoModelConfig, MultimodalModelConfig, B
 from huggingface_hub import hf_hub_download
 
 def _masked_mean(self, hidden_states: torch.Tensor, attention_mask: torch.Tensor) -> torch.Tensor:
-    """Compute mean pooling with attention mask"""
+    """Compute mean pooling with attention mask
+    可変長の系列を，paddingを除外しながら1本のD次元ベクトルにする処理"""
     # Extend mask to same shape as hidden states
     mask = attention_mask.unsqueeze(-1).expand(hidden_states.size())
     masked_sum = torch.sum(hidden_states * mask, dim=1)
@@ -175,6 +176,7 @@ class BaseModule(pl.LightningModule, ABC):
         pass
     
     def training_step(self, batch, batch_idx):
+        """trainer.fitを呼び出すと一バッチごとにこの関数が呼び出される"""
         return self._common_step(batch, batch_idx, "train")
     
     def validation_step(self, batch, batch_idx):
@@ -265,7 +267,7 @@ class AudioClassificationModule(BaseModule):
                 nn.GELU(),
                 nn.Dropout(config.dropout),
                 nn.Linear(hidden_size, 1)  # Binary classification for each label
-            )
+            ) # nn.Sequentialは処理が上から下へ順番に流れる場合に，複数の層をまとめて書く関数
         
         self.print_trainable_parameters()
     

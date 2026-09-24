@@ -47,7 +47,7 @@ def parse_args():
 
 
 def main(args):
-    config = from_args(args)
+    config = from_args(args) # コマンドライン引数を階層構造を持ったconfigに振り分ける作業
     # pl.seed_everything(config.seed)
     
     # Initialize logger

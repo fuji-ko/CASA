@@ -61,7 +61,8 @@ def is_segment_excluded(start_time, end_time, excluded_segments):
     return False
 
 def _process_audio(audio: str, processor) -> Dict[str, torch.Tensor]:
-    """Process audio file using Wav2Vec2 processor"""
+    """Process audio file using Wav2Vec2 processor
+        戻り値は，正規化されたaudio特徴量"""
     
     # Convert to mono if stereo
     if audio.shape[0] > 1:

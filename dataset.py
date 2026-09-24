@@ -127,7 +127,7 @@ class AudioDataset(BaseDataset):
         return {
             "clip_id": clip_id,
             "audio_inputs": audio,
-            **label,
+            **label, # 辞書の中身を展開: {"A": ~, "B": ~} -> {"A": ~}, {"B": ~} 
         }
         
 class VideoDataset(BaseDataset):
@@ -157,7 +157,7 @@ class VideoDataset(BaseDataset):
         return {
             "clip_id": clip_id,
             "video_inputs": video,
-            **label,
+            **label, # 辞書の中身を展開: {"A": ~, "B": ~} -> {"A": ~}, {"B": ~} 
         }
     
 class VideoAudioDataset(BaseDataset):
@@ -209,6 +209,7 @@ def prep_dataset(config: DatasetConfig, split: str = "train", modality: Optional
         raise ValueError(f"Unsupported modality: {modality}")
 
 def collate_fn(batch: List[Dict[str, torch.Tensor]]) -> Dict[str, torch.Tensor]:
+    """dataloaderの返り値はこの関数の返り値とほぼ同等"""
     
     # collator to stack tensors
     collated = {}

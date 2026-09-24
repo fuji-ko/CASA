@@ -26,7 +26,7 @@ class AudioModelConfig(BaseModelConfig):
     pretrained_model_name: str = "facebook/wav2vec2-base-960h"
     freeze_encoder: bool = True
     freeze_feature_extractor: bool = True
-    unfreeze_layers: Optional[List[int]] = None
+    unfreeze_layers: Optional[List[int]] = None # Optional: 整数リストもしくはNone
     scheduler_warmup_steps: int = 0
     loss_weights: List[float] = field(default_factory=lambda: [
         # 0.9,  # SR
@@ -56,8 +56,10 @@ class VideoModelConfig(BaseModelConfig):
 
 @dataclass
 class MultimodalModelConfig(BaseModelConfig):
-    audio_config: AudioModelConfig = AudioModelConfig()
-    video_config: VideoModelConfig = VideoModelConfig()
+    # audio_config: AudioModelConfig = AudioModelConfig()
+    audio_config: AudioModelConfig = field(default_factory=AudioModelConfig) # revised 2026-9-11
+    # video_config: VideoModelConfig = VideoModelConfig()
+    video_config: VideoModelConfig = field(default_factory=VideoModelConfig)
     fusion_method: str = "concat"
     fusion_dim: int = 512  # Default fusion dimension, can be adjusted based on model output sizes
     loss_weights: List[float] = field(default_factory=lambda: [
@@ -79,11 +81,11 @@ class TrainingConfig:
     modality: str = "audio"
 
     # dataset configurations
-    dataset_config: DatasetConfig = DatasetConfig()
+    dataset_config: DatasetConfig = field(default_factory=DatasetConfig) # revised
 
     # model configurations
-    audio_model_config: AudioModelConfig = AudioModelConfig()
-    video_model_config: VideoModelConfig = VideoModelConfig()
+    audio_model_config: AudioModelConfig = field(default_factory=AudioModelConfig) # reviced
+    video_model_config: VideoModelConfig = field(default_factory=VideoModelConfig) # reviced
     fusion_method: str = "concat"
     fusion_dim: int = 512
 
@@ -94,7 +96,7 @@ class TrainingConfig:
 # update configs from args
 def from_args(args):
     config = TrainingConfig()
-    for key, value in vars(args).items():
+    for key, value in vars(args).items(): # varsはNamespace型(argparse.Namespace)を辞書型に変更
         if hasattr(config, key):
             setattr(config, key, value)
         elif 'audio' in key:
