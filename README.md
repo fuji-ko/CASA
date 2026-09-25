@@ -89,12 +89,13 @@ The script generates:
 ## 🧠 Models
 
 To train the models, use the following command
+exp_audioを指定すると，expディレクトリで作成されたmodule群を使用できます．
 ```bash
 python train.py \
-    --modality audio \ # audio, video, multimodal
-    --dataset_root "/path/to/dataset/dir" \
+    --modality exp_audio \ # audio, video, multimodal, exp_audio
+    --dataset_root "/work/abelab5/k_fuji/CASA/data/Voices-AWS/dataset_duration=3_overlap=0" \
     --dataset_annotator "bau" \ #eg annotator to use to train the models
-    --output_dir "/path/to/output" \ 
+    --output_dir "/work/abelab5/k_fuji/CASA/exp/result" \ 
 ```
 
 ## Notes
