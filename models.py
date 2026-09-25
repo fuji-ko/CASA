@@ -10,11 +10,13 @@ import torchmetrics
 from abc import ABC, abstractmethod
 
 from configs import AudioModelConfig, VideoModelConfig, MultimodalModelConfig, BaseModelConfig, TrainingConfig
+from exp.mymodels import FrameLevelAudioClassificationModule
 from huggingface_hub import hf_hub_download
 
 def _masked_mean(self, hidden_states: torch.Tensor, attention_mask: torch.Tensor) -> torch.Tensor:
     """Compute mean pooling with attention mask
-    可変長の系列を，paddingを除外しながら1本のD次元ベクトルにする処理"""
+    可変長の系列を，paddingを除外しながら1本のD次元ベクトルにする処理
+    paddingした部分は平均計算に含めない"""
     # Extend mask to same shape as hidden states
     mask = attention_mask.unsqueeze(-1).expand(hidden_states.size())
     masked_sum = torch.sum(hidden_states * mask, dim=1)
@@ -591,6 +593,9 @@ def prep_model(config: TrainingConfig) -> BaseModule:
     if config.modality == "audio":
         config.audio_model_config.label_names = ['P', 'B', 'SR', 'ISR','MUR', 'any']
         return AudioClassificationModule(config.audio_model_config)
+    elif config.modality == "exp_audio":
+        config.audio_model_config.label_names = ['P', 'B', 'SR', 'ISR','MUR', 'any']
+        return FrameLevelAudioClassificationModule(config.)
     elif config.modality == "video":
         config.video_model_config.label_names = ['FG', 'HM', 'V', 'any']
         return VideoClassificationModule(config.video_model_config)

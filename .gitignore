@@ -9,3 +9,9 @@ data/clips
 **__pycache__**
 
 prepare_pyannote.py
+
+data/Voices-AWS/dataset_duration=3_overlap=0/
+data/Voices-AWS/dataset_duration=5_overlap=2/
+data/Voices-AWS/interview/audios/
+data/Voices-AWS/reading/audios/
+result/

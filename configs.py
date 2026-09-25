@@ -37,6 +37,24 @@ class AudioModelConfig(BaseModelConfig):
         1.0,  # any
     ])
 
+# 実験用configモジュール
+@dataclass # __init__を自動的に作成してくれる
+class MyAudioModelConfig(BaseModelConfig):
+    pretrained_model_name: str = "microsoft/wavlm-large"
+    freeze_encoder: bool = True
+    freeze_feature_extractor: bool = True
+    unfreeze_layers: Optional[List[int]] = None
+    scheduler_warmup_steps: int = 0
+    loss_weights: List[float] = field(default_factory=lambda: [
+        # 0.9,  # SR
+        # 0.7,  # ISR
+        # 0.9,  # MUR
+        # 0.9,  # P
+        # 0.6,  # B
+        1.0,  # any
+    ])
+
+
 
 @dataclass
 class VideoModelConfig(BaseModelConfig):
@@ -85,6 +103,7 @@ class TrainingConfig:
 
     # model configurations
     audio_model_config: AudioModelConfig = field(default_factory=AudioModelConfig) # reviced
+    exp_audio_model_cofig: MyAudioModelConfig = field(default_factory=MyAudioModelConfig)
     video_model_config: VideoModelConfig = field(default_factory=VideoModelConfig) # reviced
     fusion_method: str = "concat"
     fusion_dim: int = 512
