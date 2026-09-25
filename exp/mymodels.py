@@ -37,12 +37,12 @@ class FrameLevelAudioClassificationModule(BaseModule):
         self.classifier = nn.ModuleDict()
         for label in self.label_names:
             self.classifier[label] = nn.Sequential(
-                nn.LSTM(hidden_size, (hidden_size // 2), bidirectional=True, num_layer=2, batch_first=True)
+                nn.LSTM(hidden_size, (hidden_size // 2), bidirectional=True, num_layer=2, batch_first=True),
                 nn.Linear(hidden_size, (hidden_size // 2)),
                 nn.functional.relu(),
                 nn.LayerNorm(hidden_size // 2),
                 nn.Dropout(config.dropout),
-                nn.Linear((hidden_size // 2), 1)  # Binary classification for each label
+                nn.Linear((hidden_size // 2), 1)  # Binary classification for each label (T,1)
             ) # nn.Sequentialは処理が上から下へ順番に流れる場合に，複数の層をまとめて書く関数
         
         self.print_trainable_parameters()
@@ -77,24 +77,24 @@ class FrameLevelAudioClassificationModule(BaseModule):
         )
         hidden_states = outputs.last_hidden_state  # (B, T, D)
         
-        Pool hidden states
-        if attention_mask is not None:
-            # Masked mean pooling
-            pooled = self._masked_mean(hidden_states, attention_mask)
-        else:
-            # Global mean pooling
-            pooled = hidden_states.mean(dim=1)  # (B, D)
+        # # Pool hidden states
+        # if attention_mask is not None:
+        #     # Masked mean pooling
+        #     pooled = self._masked_mean(hidden_states, attention_mask)
+        # else:
+        #     # Global mean pooling
+        #     pooled = hidden_states.mean(dim=1)  # (B, D)
         
         # Classification head
         logits = {}
         for label, head in self.classifier.items():
-            logits[label] = head(pooled)
+            logits[label] = head(hidden_states)
         # Convert logits to a single tensor
-        logits = torch.cat([logits[label] for label in self.label_names], dim=1) # shape (B, num_labels)
+        logits = torch.cat([logits[label] for label in self.label_names], dim=1) # shape (B, T, num_labels)
         
         return {
             "logits": logits,
-            "pooled_output": pooled,
+            "pooled_output": None,
             "hidden_states": outputs.hidden_states
         }
 
