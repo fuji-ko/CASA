@@ -2,17 +2,18 @@ import torch
 import torch.nn as nn
 from typing import Dict, List, Optional, Union, Tuple, Any
 from models import BaseModule
-from configs import AudioModelConfig
+from configs import MyAudioModelConfig
+from transformers import WavLMModel
 
 class FrameLevelAudioClassificationModule(BaseModule):
     """WavLM-large-based stuttering classification model]
     stuttering detectionで使用したモデル構造を再現"""
 
-    def __init__(self, config: AudioModelConfig):
+    def __init__(self, config: MyAudioModelConfig):
         super().__init__(config)
         
         # Load pre-trained WavLM-large model
-        self.backbone = Wav2Vec2Model.from_pretrained(config.pretrained_model_name)
+        self.backbone = WavLMModel.from_pretrained(config.pretrained_model_name) # 1028
         
         # Get hidden size from config
         hidden_size = self.backbone.config.hidden_size
@@ -36,11 +37,12 @@ class FrameLevelAudioClassificationModule(BaseModule):
         self.classifier = nn.ModuleDict()
         for label in self.label_names:
             self.classifier[label] = nn.Sequential(
-                nn.Linear(hidden_size, hidden_size),
-                nn.LayerNorm(hidden_size),
-                nn.GELU(),
+                nn.LSTM(hidden_size, (hidden_size // 2), bidirectional=True, num_layer=2, batch_first=True)
+                nn.Linear(hidden_size, (hidden_size // 2)),
+                nn.functional.relu(),
+                nn.LayerNorm(hidden_size // 2),
                 nn.Dropout(config.dropout),
-                nn.Linear(hidden_size, 1)  # Binary classification for each label
+                nn.Linear((hidden_size // 2), 1)  # Binary classification for each label
             ) # nn.Sequentialは処理が上から下へ順番に流れる場合に，複数の層をまとめて書く関数
         
         self.print_trainable_parameters()
@@ -75,7 +77,7 @@ class FrameLevelAudioClassificationModule(BaseModule):
         )
         hidden_states = outputs.last_hidden_state  # (B, T, D)
         
-        # Pool hidden states
+        Pool hidden states
         if attention_mask is not None:
             # Masked mean pooling
             pooled = self._masked_mean(hidden_states, attention_mask)

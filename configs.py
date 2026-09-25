@@ -45,6 +45,7 @@ class MyAudioModelConfig(BaseModelConfig):
     freeze_feature_extractor: bool = True
     unfreeze_layers: Optional[List[int]] = None
     scheduler_warmup_steps: int = 0
+    dropout: float = 0.5
     loss_weights: List[float] = field(default_factory=lambda: [
         # 0.9,  # SR
         # 0.7,  # ISR
@@ -103,7 +104,7 @@ class TrainingConfig:
 
     # model configurations
     audio_model_config: AudioModelConfig = field(default_factory=AudioModelConfig) # reviced
-    exp_audio_model_cofig: MyAudioModelConfig = field(default_factory=MyAudioModelConfig)
+    exp_audio_model_config: MyAudioModelConfig = field(default_factory=MyAudioModelConfig)
     video_model_config: VideoModelConfig = field(default_factory=VideoModelConfig) # reviced
     fusion_method: str = "concat"
     fusion_dim: int = 512

@@ -595,7 +595,7 @@ def prep_model(config: TrainingConfig) -> BaseModule:
         return AudioClassificationModule(config.audio_model_config)
     elif config.modality == "exp_audio":
         config.audio_model_config.label_names = ['P', 'B', 'SR', 'ISR','MUR', 'any']
-        return FrameLevelAudioClassificationModule(config.)
+        return FrameLevelAudioClassificationModule(config.exp_audio_model_config)
     elif config.modality == "video":
         config.video_model_config.label_names = ['FG', 'HM', 'V', 'any']
         return VideoClassificationModule(config.video_model_config)
