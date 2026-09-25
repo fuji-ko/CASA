@@ -88,7 +88,7 @@ The script generates:
 
 ## 🧠 Models
 
-To train the models, use the following command
+To train the models, use the following command.　　
 exp_audioを指定すると，expディレクトリで作成されたmodule群を使用できます．
 ```bash
 python train.py \
