@@ -1,16 +1,16 @@
+import sys
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import pytorch_lightning as pl
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import CosineAnnealingLR
-from transformers import Wav2Vec2Model, VivitModel
+from transformers import Wav2Vec2Model, VivitModel, WavLMModel
 from typing import Dict, List, Optional, Union, Tuple, Any
 import torchmetrics
 from abc import ABC, abstractmethod
 
-from configs import AudioModelConfig, VideoModelConfig, MultimodalModelConfig, BaseModelConfig, TrainingConfig
-from exp.mymodels import FrameLevelAudioClassificationModule
+from configs import AudioModelConfig, VideoModelConfig, MultimodalModelConfig, BaseModelConfig, TrainingConfig, MyAudioModelConfig
 from huggingface_hub import hf_hub_download
 
 def _masked_mean(self, hidden_states: torch.Tensor, attention_mask: torch.Tensor) -> torch.Tensor:
@@ -66,7 +66,7 @@ class BaseModule(pl.LightningModule, ABC):
         self.test_accuracy = torchmetrics.Accuracy(task='binary', num_labels=len(config.label_names))
         
         self.train_f1 = torchmetrics.F1Score(task='binary', num_labels=len(config.label_names))
-        self.val_f1 = torchmetrics.F1Score(task='binary', num_labels=len(config.label_names))
+        self.val_f1 = torchmetrics.F1Score(task='binary', num_labels=len(config.label_names)) # calced micro F1
         self.test_f1 = torchmetrics.F1Score(task='binary', num_labels=len(config.label_names))
 
         self.per_class_metrics = nn.ModuleDict()
@@ -109,7 +109,7 @@ class BaseModule(pl.LightningModule, ABC):
         
         # Forward pass
         outputs = self(**inputs)
-        logits = outputs["logits"]
+        logits = outputs["logits"] # (B, T, C)
         
         # Compute loss
         loss_weights = None
@@ -117,7 +117,7 @@ class BaseModule(pl.LightningModule, ABC):
             loss_weights = torch.tensor(self.config.loss_weights, device=self.device)
             
         loss = F.binary_cross_entropy_with_logits(logits, labels, loss_weights, reduction='mean')
-        
+
         # Compute predictions
         preds = torch.sigmoid(logits) > 0.5
 
@@ -347,6 +347,160 @@ class AudioClassificationModule(BaseModule):
             prepared_inputs["attention_mask"] = inputs["attention_mask"].to(self.device)
             
         return prepared_inputs
+
+class FrameLevelAudioClassificationModule(BaseModule):
+    """frame-lebel stuttering classification model
+    stuttering detectionで使用したモデル構造を再現"""
+
+    def __init__(self, config: MyAudioModelConfig):
+        super().__init__(config)
+        self.feature_extractor = config.feature_extractor
+
+        # Load pre-trained feature_extractor model
+        if self.feature_extractor == "wav2vec2":
+            self.backbone = Wav2Vec2Model.from_pretrained(config.pretrained_model_name)
+            print("wav2vec")
+        elif self.feature_extractor == "wavlm":
+            self.backbone = WavLMModel.from_pretrained(config.pretrained_model_name) # 1028
+            print("wavlm")
+        elif self.feature_extractor == "whisper":
+            raise ValueError(f"Undefined feature_extractor: {self.feature_extractor}")
+        # Get hidden size from config
+        hidden_size = self.backbone.config.hidden_size
+        
+        # Freeze feature extractor if needed
+        if config.freeze_feature_extractor:
+            self.freeze_feature_extraction()
+        
+        # Freeze encoder if needed
+        if config.freeze_encoder:
+            self.freeze_encoder()
+            
+        # Unfreeze specific layers if requested
+        if config.unfreeze_layers:
+            self.unfreeze_layers(config.unfreeze_layers)
+
+        # create separate classification heads for each label
+        if config.label_names is None or len(config.label_names) == 0:
+            raise ValueError("label_names must be provided and non-empty for audio model")
+        
+        self.classifier = nn.ModuleDict()
+        self.lstm = nn.LSTM(
+            hidden_size,
+            hidden_size // 2,
+            bidirectional=True,
+            num_layers=2,
+            batch_first=True
+        )
+        for label in self.label_names:
+            self.classifier[label] = nn.Sequential(
+                nn.Linear(hidden_size, (hidden_size // 2)),
+                nn.ReLU(),
+                nn.LayerNorm(hidden_size // 2),
+                nn.Dropout(config.dropout),
+                nn.Linear((hidden_size // 2), 1)  # Binary classification for each label (T,1)
+            ) # nn.Sequentialは処理が上から下へ順番に流れる場合に，複数の層をまとめて書く関数
+
+        # for label in self.label_names:
+        #     self.classifier[label] = nn.Sequential(
+        #         nn.Linear(hidden_size, hidden_size),
+        #         nn.LayerNorm(hidden_size),
+        #         nn.GELU(),
+        #         nn.Dropout(config.dropout),
+        #         nn.Linear(hidden_size, 1)  # Binary classification for each label
+        #     )
+        
+        self.print_trainable_parameters()
+    
+    def freeze_feature_extraction(self):
+        """Freeze the feature extraction part of wav2vec2"""
+        for param in self.backbone.feature_extractor.parameters():
+            param.requires_grad = False
+    
+    def freeze_encoder(self):
+        """Freeze the transformer encoder part of wav2vec2"""
+        for param in self.backbone.encoder.parameters():
+            param.requires_grad = False
+    
+    def unfreeze_layers(self, layer_ids: List[int]):
+        """Unfreeze specific encoder layers for fine-tuning"""
+        for layer_id in layer_ids:
+            for param in self.backbone.encoder.layers[layer_id].parameters():
+                param.requires_grad = True
+    
+    def forward(
+        self, 
+        input_values: torch.Tensor,
+        attention_mask: Optional[torch.Tensor] = None
+    ) -> Dict[str, torch.Tensor]:
+        """Forward pass for audio model"""
+
+        outputs = self.backbone(
+            input_values=input_values,
+            attention_mask=attention_mask,
+            output_hidden_states=True,
+        )
+        hidden_states = outputs.last_hidden_state  # (B, T, D)
+        
+        # Classification head
+        logits = {}
+        for label, head in self.classifier.items():
+            lstm_outputs, _ = self.lstm(hidden_states)
+            logits[label] = head(lstm_outputs) # (B, T, 1)
+        # Convert logits to a single tensor
+        logits = torch.cat([logits[label] for label in self.label_names], dim=2) # shape (B, T, num_labels)
+        
+        return {
+            "logits": logits,
+            "pooled_output": None,
+            "hidden_states": outputs.hidden_states
+        }
+
+    def _prepare_batch(self, batch) -> Tuple[Dict[str, torch.Tensor], torch.Tensor]:
+        """Prepare audio inputs and labels from batch"""
+        audio_inputs = batch["audio_inputs"] # (B, 1, T)
+        input_values = audio_inputs["input_values"].squeeze(1)  # (B, T)
+        attention_mask = audio_inputs.get("attention_mask", None)
+        
+        inputs = {"input_values": input_values}
+        if attention_mask is not None:
+            inputs["attention_mask"] = attention_mask
+            
+        labels = self._get_framelabels_tensor(batch)
+        
+        return inputs, labels
+    
+    def _prepare_prediction_inputs(self, inputs: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
+
+        input_values = inputs["input_values"].to(self.device)
+        
+        prepared_inputs = {"input_values": input_values}
+        if "attention_mask" in inputs:
+            prepared_inputs["attention_mask"] = inputs["attention_mask"].to(self.device)
+            
+        return prepared_inputs
+    
+    def _get_framelabels_tensor(self, batch: Dict) -> torch.Tensor:
+        """convert batch framelabels to a tensor(list)"""
+        batch_size = len(batch["clip_id"])
+        num_frames = len(batch[self.label_names[0]][0])
+        
+        labels = torch.zeros(batch_size, num_frames, len(self.label_names), device=self.device, dtype=torch.float32)
+        for i, label in enumerate(self.label_names):
+            if label in batch:
+                # Convert label values to float
+                label_values = batch[label]
+                for j, val in enumerate(label_values):
+                    if val is not None:
+                        labels[j, :, i] = torch.tensor(val, dtype=torch.float32, device=self.device)
+        return labels # (B, T, labels)
+
+    def return_best_f1_threshould_list(labels: torch.Tensor[int, int, int], logits: torch.Tensor[int, int, int]) -> list[int]:
+        """検証データにおいてそれぞれのクラスごとにf1が最大の閾値を返す"""
+        th_list = []
+
+        return
+
 
 class VideoClassificationModule(BaseModule):
     """ViVIT-based stuttering classification model"""
@@ -595,7 +749,7 @@ def prep_model(config: TrainingConfig) -> BaseModule:
         return AudioClassificationModule(config.audio_model_config)
     elif config.modality == "exp_audio":
         config.audio_model_config.label_names = ['P', 'B', 'SR', 'ISR','MUR', 'any']
-        return FrameLevelAudioClassificationModule(config.exp_audio_model_config)
+        return FrameLevelAudioClassificationModule(config.audio_model_config)
     elif config.modality == "video":
         config.video_model_config.label_names = ['FG', 'HM', 'V', 'any']
         return VideoClassificationModule(config.video_model_config)
