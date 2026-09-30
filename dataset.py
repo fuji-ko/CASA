@@ -1,11 +1,14 @@
 import os
+import sys
+import math
 import torch
 import pandas as pd
 from torch.utils.data import Dataset
 from typing import Dict, List, Optional, Union
-from configs import TrainingConfig, DatasetConfig
+from configs import TrainingConfig, DatasetConfig, MyAudioModelConfig
 import h5py
 from sklearn.utils import resample
+from transformers import Wav2Vec2Config, WavLMConfig
 
 class BaseDataset(Dataset):
     """Base dataset class with common functionality for all modalities"""
@@ -71,18 +74,18 @@ class BaseDataset(Dataset):
         
         return features
     
-    def process_label(self, clip_data):
+    def process_label(self, clip_data) -> Dict[str, int]:
         """Process labels from dataframe row"""
-        labels = {}
+        labels: dict[str, int] = {}
         for label in self.labels:
             if label in clip_data and not pd.isna(clip_data[label]):
-                labels[label] = clip_data[label]
+                labels[label] = clip_data[label] # clipdata[label] : int(0 or 1)
             else:
                 labels[label] = None
         labels['any'] = any(val for val in labels.values() if val is not None)
         # labels['primary'] = any(val for val in labels.values() if val in self.primary_labels)
         # labels['secondary'] = any(val for val in labels.values() if val in self.secondary_labels)
-        return labels
+        return labels # ex) labels={'SR': 0, 'ISR': 0, 'MUR': 0, 'P': 0, 'B': 0, 'V': 0, 'FG': 0, 'HM': 0, 'ME': 0, 'any': False}
     
     def __len__(self) -> int:
         return len(self.clips)
@@ -129,6 +132,126 @@ class AudioDataset(BaseDataset):
             "audio_inputs": audio,
             **label, # 辞書の中身を展開: {"A": ~, "B": ~} -> {"A": ~}, {"B": ~} 
         }
+
+    
+class FrameLevelAudioDataset(AudioDataset):
+    def __init__(self, 
+                 root, 
+                 annotator, 
+                 sampling_rate = 16000, 
+                 split = "train", 
+                 label = None, 
+                 feature_extractor: str = "wav2vec2",
+                 pretrained_model_name: str = 'facebook/wav2vec2-base-960h',
+                 **kwargs):
+
+        super().__init__(root, annotator, sampling_rate, split, label, **kwargs)
+        self.feature_extractor = feature_extractor
+        self.pretrained_model_name = pretrained_model_name
+        self.target_sampling_rate = sampling_rate
+
+    def __getitem__(self, idx):
+
+        clip_id = self.clips[idx]
+        clip_data = self.data_df[self.data_df['clip_id'] == clip_id].iloc[0]
+        media_file = clip_data['media_file']
+        task = clip_data['task']
+        audio_path = self.get_item_paths(f"{task}_{media_file}")['audio']
+
+        if os.path.exists(audio_path):
+            audio = self.read_h5(audio_path, clip_id)
+        else:
+            print(f"Audio file not found for clip {clip_id}")
+            audio = torch.zeros(1, self.target_sampling_rate)  # Default to empty audio
+
+        label = self.process_annotationlabel(clip_data, self.feature_extractor, self.pretrained_model_name, self.target_sampling_rate) # 強ラベル作成
+
+        return {
+            "clip_id": clip_id,
+            "audio_inputs": audio,
+            **label, # 辞書の中身を展開: {"A": ~, "B": ~} -> {"A": ~}, {"B": ~} 
+        }
+    
+    def process_annotationlabel(self, clip_data, feature_extractor, pretrained_model_name, sr) -> Dict[str, list]:
+        """
+        Process labels from dataframe row
+        データフレームから強ラベルデータを作成
+        特徴量抽出器の時刻フレームごとに吃音ありなしのラベルを作成
+        kernel_size: 25ms(400samples(16kHz))
+        stride_size: 20ms(320samples(16kHz))
+        clip_dataは固定長を想定
+        """
+        # select feature extractor
+        if feature_extractor == "wav2vec2":
+            model_config = Wav2Vec2Config.from_pretrained(pretrained_model_name)
+        elif feature_extractor == "wavlm":
+            model_config = WavLMConfig.from_pretrained(pretrained_model_name)
+        else:
+            raise ValueError(f"Unknown feature extractor: {feature_extractor}")
+        kernel_samples, stride_samples = self.calc_kernel_stride_samples(model_config.conv_kernel, model_config.conv_stride)
+
+        labels: dict[str, list[int]] = {}
+        annotation_start = clip_data["annotation_start"]
+        annotation_end = clip_data["annotation_end"]
+        start_time = clip_data["start_time"]
+        end_time = clip_data["end_time"]
+        clip_duration = (end_time - start_time) # float
+        clip_samples = int(clip_duration * sr)
+        num_frames = (clip_samples - kernel_samples) // stride_samples + 1 # 3 sec -> 149frames
+        kernel_sec = kernel_samples / sr
+        stride_sec = stride_samples / sr
+        
+        # annotationラベルが付与されてなければ，すべてのラベルの時刻フレームラベルを0にする
+        if annotation_start is None or annotation_end is None:
+            for label in self.labels:
+                if label in clip_data and not pd.isna(clip_data[label]):
+                    labels[label] = num_frames * [0] # num frame個分0が格納された0次元リスト
+                else:
+                    raise ValueError(f"予期しない条件分岐が行われました")
+
+        # annotationラベルが付与されていれば，annotation区間に該当する時刻フレームに任意の症状ラベルをつける
+        else:
+            for label in self.labels:
+                if label in clip_data and not pd.isna(clip_data[label]):
+                    if clip_data[label] == 1:
+                        labels[label] = self.make_stronglabel(num_frames, start_time, end_time, annotation_start,annotation_end, kernel_sec, stride_sec)
+                    else: # if clip_data[label] == 0:
+                        labels[label] = num_frames * [0]
+                else:
+                    raise ValueError(f"予期しない条件分岐が行われました")
+
+        return labels
+    
+    def make_stronglabel(self, num_frames: int,
+                         start_sec: float,
+                         end_sec: float,
+                         annotation_start: float,
+                         annotation_end: float,
+                         kernel_sec: float,
+                         stride_sec: float) -> list[int]:
+        """annotation区間に該当する時刻フレームに任意の症状ラベルをつける"""
+        labels = [0] * num_frames
+        
+        for i in range(num_frames):
+            frame_start = start_sec + i * stride_sec
+            frame_end = frame_start + kernel_sec
+            
+            # フレームとアノテーション区間が少しでも重なっていれば1を返す
+            if frame_start < annotation_end and frame_end > annotation_start:
+                labels[i] = 1
+            
+        return labels
+
+    def calc_kernel_stride_samples(self, kernels: list, strides: list):
+        kernel_samples = 1
+        stride_samples = 1
+
+        for kernel, stride in zip(kernels, strides):
+            kernel_samples += (kernel - 1) * stride_samples
+            stride_samples *= stride
+
+        return kernel_samples, stride_samples
+
         
 class VideoDataset(BaseDataset):
     """Dataset for video-only processing using ViVIT"""
@@ -197,10 +320,16 @@ class VideoAudioDataset(BaseDataset):
         }
     
 
-def prep_dataset(config: DatasetConfig, split: str = "train", modality: Optional[str] = 'audio') -> Union[AudioDataset, VideoDataset, VideoAudioDataset]:
+def prep_dataset(config: DatasetConfig, 
+                 split: str = "train", 
+                 modality: Optional[str] = 'audio', 
+                 feature_extractor: str = "wav2vec2", 
+                 pretrained_model_name: str = 'facebook/wav2vec2-base-960h') -> Union[AudioDataset, VideoDataset, VideoAudioDataset]:
 
     if modality == "audio":
         return AudioDataset(**vars(config), split=split)
+    elif modality == "exp_audio":
+        return FrameLevelAudioDataset(**vars(config), split=split, feature_extractor=feature_extractor, pretrained_model_name=pretrained_model_name)
     elif modality == "video":
         return VideoDataset(**vars(config), split=split)
     elif modality == "multimodal":

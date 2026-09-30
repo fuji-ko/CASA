@@ -1,4 +1,5 @@
 import sys
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -9,7 +10,7 @@ from transformers import Wav2Vec2Model, VivitModel, WavLMModel
 from typing import Dict, List, Optional, Union, Tuple, Any
 import torchmetrics
 from abc import ABC, abstractmethod
-
+from sklearn.metrics import precision_recall_curve
 from configs import AudioModelConfig, VideoModelConfig, MultimodalModelConfig, BaseModelConfig, TrainingConfig, MyAudioModelConfig
 from huggingface_hub import hf_hub_download
 
@@ -495,12 +496,98 @@ class FrameLevelAudioClassificationModule(BaseModule):
                         labels[j, :, i] = torch.tensor(val, dtype=torch.float32, device=self.device)
         return labels # (B, T, labels)
 
-    def return_best_f1_threshould_list(labels: torch.Tensor[int, int, int], logits: torch.Tensor[int, int, int]) -> list[int]:
-        """検証データにおいてそれぞれのクラスごとにf1が最大の閾値を返す"""
-        th_list = []
+    def _common_step(self, batch, batch_idx, step_type):
+        """
+        フレームレベル検出用関数
+        Common step for training, validation and testing"""
+        # Get inputs and labels based on child implementation
+        inputs, labels = self._prepare_batch(batch)
+        
+        # Forward pass
+        outputs = self(**inputs)
+        logits = outputs["logits"] # (B, T, C)
+        
+        # Compute loss
+        loss_weights = None
+        if self.config.loss_weights is not None:
+            loss_weights = torch.tensor(self.config.loss_weights, device=self.device)
+            
+        loss = F.binary_cross_entropy_with_logits(logits, labels, loss_weights, reduction='mean')
 
-        return
+        # Compute predictions
+        preds = torch.sigmoid(logits) > 0.5
 
+        # Update metrics
+        if step_type == "train":
+            # self.train_accuracy(preds, labels)
+            # self.train_f1(preds, labels)
+            self.log("train/loss", loss, prog_bar=True, on_step=True, on_epoch=True)
+            # self.log("train/acc", self.train_accuracy, prog_bar=True, on_epoch=True)
+            # self.log("train/f1", self.train_f1, prog_bar=True, on_epoch=True)
+        elif step_type == "val":
+            probs = torch.sigmoid(logits)
+            best_th_list = self.return_best_f1_threshold(labels.detach(), probs.detach())
+            preds = probs > torch.tensor(best_th_list, device=self.device)
+            self.val_accuracy(preds, labels)
+            self.val_f1(preds, labels)
+            self.log("val/loss", loss, prog_bar=True, on_epoch=True)
+            self.log("val/acc", self.val_accuracy, prog_bar=True, on_epoch=True)
+            self.log("val/f1", self.val_f1, prog_bar=True, on_epoch=True)
+            self._update_per_class_metrics(preds, labels, step_type)
+        elif step_type == "test":
+            print(f'{self.best_thresholds=}')
+            preds = torch.sigmoid(logits) > torch.tensor(self.best_thresholds, device=self.device)
+            self.test_accuracy(preds, labels)
+            self.test_f1(preds, labels)
+            self.log("test/loss", loss, prog_bar=True, on_epoch=True)
+            self.log("test/acc", self.test_accuracy, prog_bar=True, on_epoch=True)
+            self.log("test/f1", self.test_f1, prog_bar=True, on_epoch=True)
+            self._update_per_class_metrics(preds, labels, step_type)
+        
+        return {
+            "loss": loss,
+            "preds": preds,
+            "labels": labels,
+            "logits": logits
+        }
+
+    def on_validation_epoch_start(self):
+        """validation開始時にlightningが呼び出し"""
+        self.val_labels = []
+        self.val_probs = []
+
+    def validation_step(self, batch, batch_idx):
+        outputs = self._common_step(batch, batch_idx, "val")
+
+        self.val_labels.append(outputs["labels"].detach())
+        self.val_probs.append(torch.sigmoid(outputs["logits"]).detach())
+
+        return outputs
+
+    def on_validation_epoch_end(self):
+        labels = torch.cat(self.val_labels, dim=0)
+        probs = torch.cat(self.val_probs, dim=0)
+        self.best_thresholds = self.return_best_f1_threshold(labels, probs)
+
+    def return_best_f1_threshold(self,
+                                 labels: torch.Tensor, # (B, T, C)
+                                 logits: torch.Tensor # (B,T,C)
+                                 ) -> list[int]:
+        best_th = []
+        labels = labels.flatten(0, 1).cpu().numpy()
+        logits = logits.flatten(0, 1).cpu().numpy()
+        for i in range(len(self.label_names)):
+            label = labels[:,i]
+            logit = logits[:,i]
+            
+            precision, recall, thresholds = precision_recall_curve(label, logit)
+            f1 = 2 * precision * recall / (precision + recall + 1e-10)
+            best_idx = np.argmax(f1)
+            best_threshold = thresholds[best_idx]
+            best_th.append(best_threshold)
+        return best_th
+
+        
 
 class VideoClassificationModule(BaseModule):
     """ViVIT-based stuttering classification model"""

@@ -1,3 +1,4 @@
+import sys
 from dataclasses import dataclass, field
 from typing import List, Optional
 
@@ -23,6 +24,7 @@ class BaseModelConfig:
 
 @dataclass
 class AudioModelConfig(BaseModelConfig):
+    feature_extractor: str = "wav2vec2"
     pretrained_model_name: str = "facebook/wav2vec2-base-960h"
     freeze_encoder: bool = True
     freeze_feature_extractor: bool = True
@@ -40,6 +42,7 @@ class AudioModelConfig(BaseModelConfig):
 # 実験用configモジュール
 @dataclass # __init__を自動的に作成してくれる
 class MyAudioModelConfig(BaseModelConfig):
+    feature_extractor: str = "wav2vec2"
     pretrained_model_name: str = "microsoft/wavlm-large"
     freeze_encoder: bool = True
     freeze_feature_extractor: bool = True
@@ -104,7 +107,6 @@ class TrainingConfig:
 
     # model configurations
     audio_model_config: AudioModelConfig = field(default_factory=AudioModelConfig) # reviced
-    exp_audio_model_config: MyAudioModelConfig = field(default_factory=MyAudioModelConfig)
     video_model_config: VideoModelConfig = field(default_factory=VideoModelConfig) # reviced
     fusion_method: str = "concat"
     fusion_dim: int = 512
@@ -117,6 +119,7 @@ class TrainingConfig:
 def from_args(args):
     config = TrainingConfig()
     for key, value in vars(args).items(): # varsはNamespace型(argparse.Namespace)を辞書型に変更
+        # print(f"BEFORE: {key} = {value}")
         if hasattr(config, key):
             setattr(config, key, value)
         elif 'audio' in key:
@@ -133,4 +136,5 @@ def from_args(args):
                 setattr(config.dataset_config, dataset_key, value)
         else:
             print(f"Warning: {key} not found in config")
+    # print("AFTER:", config.audio_model_config.feature_extractor)
     return config
