@@ -117,30 +117,30 @@ def process_video(args):
             duration = container.duration / av.time_base
 
             # Extract all audio frames first
-            # audio_frames = []
-            # if audio_stream:
-            #     container.seek(0)
-            #     for frame in container.decode(audio=0):
-            #         audio_frames.append(frame.to_ndarray())
+            audio_frames = []
+            if audio_stream:
+                container.seek(0)
+                for frame in container.decode(audio=0):
+                    audio_frames.append(frame.to_ndarray())
             
             # Concatenate audio frames and convert to tensor
-            # if audio_frames:
-            #     audio_array = np.concatenate(audio_frames, axis=1)
-            #     audio_tensor = torch.from_numpy(audio_array).float()
+            if audio_frames:
+                audio_array = np.concatenate(audio_frames, axis=1)
+                audio_tensor = torch.from_numpy(audio_array).float()
                 
-            #     # Convert stereo to mono if needed
-            #     if audio_tensor.shape[0] > 1:
-            #         audio_tensor = torch.mean(audio_tensor, dim=0, keepdim=True)
+                # Convert stereo to mono if needed
+                if audio_tensor.shape[0] > 1:
+                    audio_tensor = torch.mean(audio_tensor, dim=0, keepdim=True)
                 
-            #     # Resample to 16kHz if needed
-            #     original_sr = audio_stream.sample_rate
-            #     if original_sr != 16000:
-            #         import torchaudio
-            #         resampler = torchaudio.transforms.Resample(orig_freq=original_sr, new_freq=16000)
-            #         audio_tensor = resampler(audio_tensor)
-            # else:
-            #     # No audio - create silence
-            #     audio_tensor = torch.zeros(1, int(duration * 16000))
+                # Resample to 16kHz if needed
+                original_sr = audio_stream.sample_rate
+                if original_sr != 16000:
+                    import torchaudio
+                    resampler = torchaudio.transforms.Resample(orig_freq=original_sr, new_freq=16000)
+                    audio_tensor = resampler(audio_tensor)
+            else:
+                # No audio - create silence
+                audio_tensor = torch.zeros(1, int(duration * 16000))
 
             stride = clip_duration - overlap
             start_times = np.arange(0, duration - clip_duration, stride)
@@ -165,57 +165,57 @@ def process_video(args):
                     print(f"Skipping already processed clip {clip_id}")
                     continue
 
-                # # Process and save audio features
-                # start_sample = int(start_time * 16000)
-                # end_sample = int(end_time * 16000)
-                # audio_clip = audio_tensor[:, start_sample:end_sample]
+                # Process and save audio features
+                start_sample = int(start_time * 16000)
+                end_sample = int(end_time * 16000)
+                audio_clip = audio_tensor[:, start_sample:end_sample]
               
-                # audio_features = _process_audio(audio_clip, audio_processor)
+                audio_features = _process_audio(audio_clip, audio_processor)
                 
-                # # Save as float16
-                # for k, v in audio_features.items():
-                #     arr = v.cpu().numpy().astype('float16')
-                #     ds_name = f"{clip_id}/{k}"
-                #     if ds_name in audio_h5:
-                #         del audio_h5[ds_name]
-                #     audio_h5.create_dataset(ds_name, data=arr, compression='gzip')
+                # Save as float16
+                for k, v in audio_features.items():
+                    arr = v.cpu().numpy().astype('float16')
+                    ds_name = f"{clip_id}/{k}"
+                    if ds_name in audio_h5:
+                        del audio_h5[ds_name]
+                    audio_h5.create_dataset(ds_name, data=arr, compression='gzip')
 
-                # # Extract frames directly for video features
-                # start_frame = int(start_time * fps)
-                # end_frame = int(end_time * fps)
-                # frames_to_extract = end_frame - start_frame
-                # # Extract frames needed for video features
-                # container.seek(int(start_time * 1000000), any_frame=False, stream=video_stream)
+                # Extract frames directly for video features
+                start_frame = int(start_time * fps)
+                end_frame = int(end_time * fps)
+                frames_to_extract = end_frame - start_frame
+                # Extract frames needed for video features
+                container.seek(int(start_time * 1000000), any_frame=False, stream=video_stream)
                 
-                # frames = []
-                # for i, frame in enumerate(container.decode(video=0)):
-                #     if i >= frames_to_extract:
-                #         break
-                #     # Convert PyAV frame to numpy array
-                #     frame_array = frame.to_ndarray(format="rgb24")
-                #     frames.append(frame_array)
+                frames = []
+                for i, frame in enumerate(container.decode(video=0)):
+                    if i >= frames_to_extract:
+                        break
+                    # Convert PyAV frame to numpy array
+                    frame_array = frame.to_ndarray(format="rgb24")
+                    frames.append(frame_array)
                 
-                # if len(frames) < 32:  # Pad if we don't have enough frames
-                #     last_frame = frames[-1] if frames else np.zeros((video_stream.height, video_stream.width, 3), dtype=np.uint8)
-                #     frames.extend([last_frame] * (32 - len(frames)))
+                if len(frames) < 32:  # Pad if we don't have enough frames
+                    last_frame = frames[-1] if frames else np.zeros((video_stream.height, video_stream.width, 3), dtype=np.uint8)
+                    frames.extend([last_frame] * (32 - len(frames)))
                 
-                # # Sample or trim to exactly 32 frames
-                # if len(frames) != 32:
-                #     indices = np.linspace(0, len(frames) - 1, 32).astype(int)
-                #     frames = [frames[i] for i in indices]
+                # Sample or trim to exactly 32 frames
+                if len(frames) != 32:
+                    indices = np.linspace(0, len(frames) - 1, 32).astype(int)
+                    frames = [frames[i] for i in indices]
                 
-                # # Convert frames to PIL images for the processor
-                # pil_frames = [torchvision.transforms.ToPILImage()(torch.from_numpy(frame).permute(2,0,1)) for frame in frames]
+                # Convert frames to PIL images for the processor
+                pil_frames = [torchvision.transforms.ToPILImage()(torch.from_numpy(frame).permute(2,0,1)) for frame in frames]
                 
-                # video_features = video_processor(images=pil_frames, return_tensors="pt")
-                # for k, v in video_features.items():
-                #     arr = v.cpu().numpy().astype('float16')
-                #     ds_name = f"{clip_id}/{k}"
-                #     if ds_name in video_h5:
-                #         del video_h5[ds_name]
-                #     video_h5.create_dataset(ds_name, data=arr, compression='gzip')
+                video_features = video_processor(images=pil_frames, return_tensors="pt")
+                for k, v in video_features.items():
+                    arr = v.cpu().numpy().astype('float16')
+                    ds_name = f"{clip_id}/{k}"
+                    if ds_name in video_h5:
+                        del video_h5[ds_name]
+                    video_h5.create_dataset(ds_name, data=arr, compression='gzip')
         
-                # successful_clips.add(clip_id)
+                successful_clips.add(clip_id)
                 
     except Exception as e:
         print(f"Error processing video {video_path}: {str(e)}")
