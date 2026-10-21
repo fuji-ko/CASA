@@ -10,12 +10,14 @@ from tqdm.auto import tqdm
 import torch
 import torchvision
 from typing import Dict
-from transformers import Wav2Vec2Processor, VivitImageProcessor
+from transformers import Wav2Vec2Processor, VivitImageProcessor, WhisperProcessor
 import h5py
+import json
 
 
 video_processor = VivitImageProcessor.from_pretrained("google/vivit-b-16x2-kinetics400")
 audio_processor = Wav2Vec2Processor.from_pretrained("facebook/wav2vec2-base-960h")
+audio_processor_whisper = WhisperProcessor.from_pretrained("openai/whisper-medium")
 
 def agg_fn():
     return{
@@ -38,6 +40,9 @@ def agg_fn():
         'ME': 'max',
         'T': 'max'
     }
+
+def agtgregate_clip_labels(df):
+    result = df.groupby("clip_id").agg(agg_fn())
 
 def load_exclusions(exclusions_path):
 
@@ -79,6 +84,17 @@ def _process_audio(audio: str, processor) -> Dict[str, torch.Tensor]:
     
     return processed
 
+def _process_audio_by_whisper(audio: str, processor = "whisper") -> Dict[str, torch.Tensor]:
+    """process audio file using Whisper processor"""
+
+    # Convert to mono if stereo
+    if audio.shape[0] > 1:
+        audio = torch.mean(audio, dim=0, keepdim=True)
+
+    processed = processor(audio.numpy(), sampling_rate=16000, return_tensors="pt")
+
+    return processed
+
 def deterministic_clip_id(task, media_file, start_time, end_time, clip_duration):
     """
     Generate a deterministic, reusable clip ID based on media_file, start_time, end_time, and clip_duration.
@@ -87,7 +103,7 @@ def deterministic_clip_id(task, media_file, start_time, end_time, clip_duration)
     # return hashlib.md5(id_str.encode('utf-8')).hexdigest()
     return id_str
 
-def process_video(args):
+def process_video(args, processor_type="wav2vec2"):
     """
     Process all clips for a single video file in one thread, extracting audio and video features.
     Uses PyAV for video processing and saves preprocessed features directly without saving MP4 files.
@@ -160,17 +176,27 @@ def process_video(args):
             for clip_id, start_time, end_time in video_clips:
 
                 # Skip if already processed
-                if clip_id in audio_h5 or clip_id in video_h5:
+                audio_done = clip_id in audio_h5 and len(audio_h5[clip_id]) > 0
+                video_done = clip_id in video_h5 and len(video_h5[clip_id]) > 0
+                if audio_done and video_done:
                     successful_clips.add(clip_id)
                     print(f"Skipping already processed clip {clip_id}")
                     continue
+
+                # if clip_id in audio_h5 or clip_id in video_h5:
+                #     successful_clips.add(clip_id)
+                #     print(f"Skipping already processed clip {clip_id}")
+                #     continue
 
                 # Process and save audio features
                 start_sample = int(start_time * 16000)
                 end_sample = int(end_time * 16000)
                 audio_clip = audio_tensor[:, start_sample:end_sample]
-              
-                audio_features = _process_audio(audio_clip, audio_processor)
+
+                if processor_type == "wav2vec2":
+                    audio_features = _process_audio(audio_clip, audio_processor)
+                elif processor_type == "whisper":
+                    audio_features = _process_audio_by_whisper(audio_clip, audio_processor_whisper)
                 
                 # Save as float16
                 for k, v in audio_features.items():
@@ -226,7 +252,7 @@ def process_video(args):
 
     return video_clips, successful_clips
 
-def create_overlapping_clips(input_df, base_path, output_dir='clips', clip_duration=5, overlap=2, max_workers=4):
+def create_overlapping_clips(input_df, base_path, output_dir='clips', clip_duration=5, overlap=2, max_workers=4, processor_type="wav2vec2"):
     """
     Create overlapping clips using one thread per video file.
     
@@ -238,7 +264,8 @@ def create_overlapping_clips(input_df, base_path, output_dir='clips', clip_durat
         overlap: Overlap duration between clips in seconds
         max_workers: Maximum number of threads to use
     """
-    
+    print(f"debag: {processor_type}")
+
     # Create output directories
     os.makedirs(os.path.join(output_dir, 'audios'), exist_ok=True)
     os.makedirs(os.path.join(output_dir, 'videos'), exist_ok=True)
@@ -265,7 +292,7 @@ def create_overlapping_clips(input_df, base_path, output_dir='clips', clip_durat
     all_video_clips = []
     all_successful_clips = set()
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures = [executor.submit(process_video, args) for args in video_args]
+        futures = [executor.submit(process_video, args, processor_type) for args in video_args]
         with tqdm(total=len(futures), desc="Processing videos") as pbar:
             for future in as_completed(futures):
                 video_clips, successful_clips = future.result()
@@ -340,6 +367,15 @@ def create_overlapping_clips(input_df, base_path, output_dir='clips', clip_durat
 
     # Create and save labels DataFrame
     labels_df = pd.DataFrame(clips_metadata)
+    labels_df = save_annotation_labels(labels_df, output_dir, all_annotators)
+
+    return labels_df
+
+def save_annotation_labels_default(labels_df, output_dir, clips_metadata, all_annotators, label_cols):
+    """
+    元実装と同じ関数を記述
+    agg_fnで集約処理を実装するが，同一クリップ内で複数のアノテーション区間が連結されてしまうのがネックになっているため没
+    """
     
     # Separate test and non-test data
     test_df = labels_df[(labels_df['annotator'] == 'Gold') & (labels_df['split'] == 'test')]
@@ -389,16 +425,41 @@ def create_overlapping_clips(input_df, base_path, output_dir='clips', clip_durat
 
     return labels_df
 
+def save_annotation_labels(labels_df, output_dir, annotators):    
+    columns = [
+    'clip_id', 'media_file', 'task', 'split', 'annotator',
+    'start_time', 'end_time', 'annotation_start', 'annotation_end',
+    'SR', 'ISR', 'MUR', 'P', 'B', 'V', 'FG', 'HM', 'ME', 'T',
+    ]
+
+    labels_df = labels_df.reindex(columns=columns)
+    label_dir = os.path.join(output_dir, "labels")
+    os.makedirs(label_dir, exist_ok=True)
+    
+    test_df = labels_df[(labels_df["annotator"] == "Gold") & (labels_df["split"] == "test")]
+    for annotator in annotators:
+        annotator_df = labels_df[
+            (labels_df["annotator"] == annotator) & (labels_df["split"] != "test")
+        ]
+        combined_df = pd.concat([annotator_df, test_df], ignore_index=True)
+        combined_df = combined_df.sort_values(
+            ['task', 'media_file', 'start_time', 'annotation_start', 'annotation_end'],
+            kind='stable',
+        )
+        combined_df.to_csv(os.path.join(label_dir, f'{annotator}.csv'), index=False)
+
+    return labels_df
+
 def parse_args():
     import argparse
     parser = argparse.ArgumentParser(description="Create overlapping clips from dataset")
     # parser.add_argument('--input_csv', type=str, default='data/Voices-AWS/total_dataset.csv', help='Path to input CSV file')
     parser.add_argument('--root_dir', type=str, default='data/Voices-AWS', help='Base path for media files')
     parser.add_argument('--output_dir', type=str, default='data/clips', help='Directory to save output clips and labels')
-    parser.add_argument('--clip_duration', type=int, default=5, help='Duration of each clip in seconds')
-    parser.add_argument('--overlap', type=int, default=2, help='Overlap duration between clips in seconds')
+    parser.add_argument('--clip_duration', type=int, default=3, help='Duration of each clip in seconds')
+    parser.add_argument('--overlap', type=int, default=0, help='Overlap duration between clips in seconds')
     parser.add_argument('--max_workers', type=int, default=16, help='Number of threads to use for processing')
-    
+    parser.add_argument('--processor_type', type=str, default='wav2vec2', choices=["wav2vec2", "whisper"], help="h5ファイルに格納する音声特徴量の種類を指定します．wav2vec2の場合は，正規化された音声が格納されます．log-melの場合は，whisperProcessiorから抽出され，30秒にパディングされたlog-melが格納されます．")
     return parser.parse_args()
 
 def main():
@@ -415,7 +476,8 @@ def main():
         output_dir=args.output_dir,
         max_workers=args.max_workers,
         clip_duration=args.clip_duration,
-        overlap=args.overlap
+        overlap=args.overlap,
+        processor_type=args.processor_type
     )
     
     print(f"Created {len(labels_df['clip_id'].unique())} clips")
