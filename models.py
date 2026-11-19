@@ -1302,14 +1302,7 @@ class EnsambleAudioClassificationModule(FrameLevelAudioClassificationModule):
         super().__init__(config)
         self.train_fronted = train_fronted
         hidden_size = self.backbone.config.hidden_size
-        output_layer = config.output_layer
-                
-        # select classification model
-        self.prediction_model = ARCHITECTURES[config.architecture](
-            hidden_size = hidden_size * 3,
-            label_names=self.label_names,
-            dropout=config.dropout,
-        )
+        output_layer = config.output_classifier_layer
         
         frontends_definitions = [ # list[tuple]
             (
@@ -1332,7 +1325,37 @@ class EnsambleAudioClassificationModule(FrameLevelAudioClassificationModule):
             ),
         ]
         
+        def select_layers(head, layer_index):
+            """指定した層までを取り出し，その出力次元も返す"""
+            """classifierの構造が変われば，この関数は使えないことに注意"""
+            if not isinstance(layer_index, int):
+                raise ValueError("output_layer must be an integer")
+            
+            index = layer_index
+            if index < 0: # -1や-2は末尾から数える
+                index += len(head)
+                
+            if not 0 <= index < len(head):
+                raise ValueError(
+                    f"output_layer={layer_index} is out of range"
+                    f"for a head with {len(head)} layers"
+                )
+            
+            # 指定した番号までの層のnn.Sequentialが得られる
+            selected = head[:index + 1] # output: nn.Sequential
+            
+            # 現在のheadではLinear以外の層は次元を変えない
+            # 取り出した範囲内で最後のLinear層の出力次元を得る
+            # GeLUやLayerNormは次元を変えないため
+            for layer in reversed(list(selected)):
+                if isinstance(layer, nn.Linear):
+                    output_size = layer.out_features # 出力次元を取得
+                    break
+            
+            return selected, output_size
+        
         self.frontends = nn.ModuleDict()
+        feature_size = 0
         
         for index, (name, path, classifier_cls, labels) in enumerate(frontends_definitions):
             # 独立したextractorを用意
@@ -1358,10 +1381,27 @@ class EnsambleAudioClassificationModule(FrameLevelAudioClassificationModule):
                 if key.startswith("prediction_model.")
             })
             
-            # 前段に用いるのはWavLMとLSTMのみ
+            layer_index = output_layer
+            
+            # singleheadもModuleDictに統一し，forwardで同じ処理にする
+            heads = nn.ModuleDict()
+            
+            if isinstance(classifier, LSTMSingleHead):
+                selected, size = select_layers(classifier.classifier, layer_index)
+                heads["single"] = selected
+                feature_size += size
+                
+            elif isinstance(classifier, LSTMMultiHead):
+                for label in labels:
+                    selected, size = select_layers(classifier.classifier[label], layer_index)
+                    heads[label] = selected
+                    feature_size += size
+            
+            # 各前段モデルから抽出したモデルを格納
             self.frontends[name] = nn.ModuleDict({
                 "backbone": backbone,
-                "lstm": classifier.lstm
+                "lstm": classifier.lstm,
+                "heads": heads
             })
             
             del classifier, state, checkpoint
@@ -1369,16 +1409,32 @@ class EnsambleAudioClassificationModule(FrameLevelAudioClassificationModule):
         # 元の登録名を削除．extractorはfrontends内で保持される
         del self.backbone
         
-        # 3モデルのLSTM出力を連結した次元
-        feature_size = sum(
-            branch["lstm"].hidden_size * (2 if branch["lstm"].bidirectional else 1)
-            for branch in self.frontends.values()
-        )
-        
-        # 既存の後段分類器の入力次元へ変換
+        # 後段の入力次元を一定にする際に使用
         # self.feature_projection = nn.Linear(feature_size, hidden_size)
+            
+        # select classification model
+        if config.architecture == "ensamble_transformer":
+            if feature_size == 15: # 後段linear使用時
+                nhead = 1
+            else: nhead=8
+            
+            self.prediction_model = ARCHITECTURES[config.architecture](
+            hidden_size = feature_size,
+            label_names=self.label_names,
+            dropout=config.dropout,
+            nhead=nhead,
+        )
+        else: 
+            self.prediction_model = ARCHITECTURES[config.architecture](
+                hidden_size = feature_size,
+                label_names=self.label_names,
+                dropout=config.dropout
+            )
         
         self.frontends.requires_grad_(train_fronted) # extractorもclassifierもまとめて凍結or学習
+        
+        # self.feature_projection.requires_grad_(True)
+        
         self.prediction_model.requires_grad_(True)
         
         # 初期状態のtrain/valも設定
@@ -1411,14 +1467,23 @@ class EnsambleAudioClassificationModule(FrameLevelAudioClassificationModule):
                     return_dict=True
                 )
                 
-                lstm_feature, _ = branch["lstm"](outputs.last_hidden_state)
-                features.append(lstm_feature)
+                lstm_features, _ = branch["lstm"](outputs.last_hidden_state)
+                # features.append(lstm_feature)
+                
+                for head in branch["heads"].values():
+                    features.append(head(lstm_features))
             
-            combined_features = torch.cat(features, dim=-1) # (B, T, 1024*3)
+            combined_features = torch.cat(features, dim=-1) # (B, T, D*3)
             
         # features = self.feature_projection(combined_features) # (B, T, 1024)
         
         logits = self.prediction_model(combined_features)
+    
+        # 射影層は前段凍結時も学習するため，with contextの外で実行
+        # 
+        # projected_features = self.feature_projection(combined_features)
+        # logits = self.prediction_model(projected_features)
+    
         return {
             "logits": logits,
             "pooled_output": None,

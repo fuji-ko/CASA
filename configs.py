@@ -38,7 +38,7 @@ class AudioModelConfig(BaseModelConfig):
     classification_task: str = "multilabel"
     architecture: str = "LSTMSingleHead"
     do_median_filter: bool = True
-    output_layer: str = "lstm"
+    output_classifier_layer: int = 0
     loss_weights: List[float] = field(default_factory=lambda: [
         # 0.9,  # SR
         # 0.7,  # ISR

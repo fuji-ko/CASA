@@ -47,7 +47,7 @@ def parse_args():
     parser.add_argument('--audio_architecture', type=str, default="lstm_multihead", choices=["lstm_singlehead", "lstm_multihead", "ensamble_transformer", "ensamble_linear", "ensamble_lstm"], help="classifierに用いるアーキテクチャタイプを指定")
     parser.add_argument('--audio_classification_task', type=str, default="multilabel", choices=["multilabel", "multiclass", "binaryclass"], help="分類タスクの手法を指定")
     parser.add_argument('--audio_finetuned_model_path', type=str, default=None, help="fine-tuningしたextractorやclassifierを用いる場合，読み込み先のモデルパスを指定．")
-    parser.add_argument("--audio_output_layer", type=str, default="lstm", choices=["lstm", "mid_linear", "last_linear"],help="ensambleモデル学習時に，前段モデルから引っ張ってくる層を指定.")
+    parser.add_argument("--audio_output_classifier_layer", type=int, default=0, help="ensambleモデル学習時に，前段モデルから引っ張ってくる層番号を指定.0はclassifier headの最初のLinear層, 4を指定すると，logits前のlinear層が返される.")
 
     # video model arguments
     parser.add_argument('--video_pretrained_model_name', type=str, default='google/vivit-b-16x2-kinetics400', help='Pretrained video model name')
