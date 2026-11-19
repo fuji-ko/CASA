@@ -86,13 +86,21 @@ def main(args):
     checkpoint_callback = ModelCheckpoint(
         dirpath=os.path.join(config.output_dir, 'checkpoints'),
         filename='stuttering-{epoch:02d}-{val_f1:.2f}',
-        monitor='val/epoch_f1',
+        monitor='val/f1',
         mode='max',
+        save_top_k=1
+    )
+
+    checkpoint_loss = ModelCheckpoint(
+        dirpath=os.path.join(config.output_dir, 'checkpoints'),
+        filename='stuttering-{epoch:02d}-{val_loss:.2f}',
+        monitor='val/loss',
+        mode='min',
         save_top_k=1
     )
     
     early_stopping = EarlyStopping(
-        monitor='val/epoch_f1',
+        monitor='val/f1',
         patience=10,
         mode='max'
     )
@@ -165,7 +173,7 @@ def main(args):
             accelerator='gpu',
             devices=1,
             logger=logger,
-            callbacks=[checkpoint_callback, early_stopping],
+            callbacks=[checkpoint_callback, checkpoint_loss, early_stopping],
             gradient_clip_val=1.0
         )
 
@@ -175,7 +183,7 @@ def main(args):
     # Test
     trainer.test(model,
                  test_loader,
-                 ckpt_path="best")
+                 ckpt_path="best") # 最初のModelCheckpoint=val/f1最大 が呼び出される.
     
     # save exprience setup
     # output_path = Path(config.output_dir)

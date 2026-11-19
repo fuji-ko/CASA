@@ -853,7 +853,7 @@ class FrameLevelAudioClassificationModule(BaseModule):
                        ]
         
         else: # wav2vec2 or wavlm
-            # modules = [self.backbone.feature_extractor] #TODO
+            # modules = [self.backbone.feature_extractor] 
             modules = [self.backbone]
 
         for module in modules:
