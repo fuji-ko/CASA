@@ -1,11 +1,12 @@
 import os
 import sys
 import math
+import soundfile as sf
 import torch
 import pandas as pd
 from torch.utils.data import Dataset
 from typing import Dict, List, Optional, Union
-from configs import TrainingConfig, DatasetConfig, MyAudioModelConfig
+from configs import TrainingConfig, DatasetConfig
 import h5py
 from sklearn.utils import resample
 from transformers import Wav2Vec2Config, WavLMConfig
@@ -109,7 +110,6 @@ class AudioDataset(BaseDataset):
                  **kwargs):
         
         self.target_sampling_rate = sampling_rate
-        
         super().__init__(root, annotator, split, label)
     
     def __getitem__(self, idx):
@@ -132,15 +132,176 @@ class AudioDataset(BaseDataset):
             "audio_inputs": audio,
             **label, # 辞書の中身を展開: {"A": ~, "B": ~} -> {"A": ~}, {"B": ~} 
         }
+        
+class Sep28kAudioDataset(Dataset):
+    def __init__(self,
+                 root,
+                 split,
+                 label,
+                 sampling_rate,
+                 classification_task,
+                 **kwargs,
+                 ):
+        # sep-28kdatasetでは，開発データ群は"dev"で表される.
+        if split == "val":
+            split = "dev"
+
+        self.root = root
+        self.split = split
+        self.label = label
+        self.sampling_rate = sampling_rate
+        self.label_path = "/work/abelab5/k_fuji/ml-stuttering-events-dataset-extended/SEP-28k-Extended_clips.csv"
+        self.classification_task = classification_task
+        self.symptom_names = ["SoundRep", "WordRep", "Prolongation", "Block", "Interjection"]
+        
+        self.data_df = self.prep_df()
+        self.show = self.data_df["Show"]
+        self.epid = self.data_df["EpId"]
+        self.clipid = self.data_df["ClipId"]
+        self.labels = "Prolongation,Block,SoundRep,WordRep".split(",")
+    
+    def prep_df(self):
+        """正解クリップの前処理"""
+        label_path = self.label_path
+        df = pd.read_csv(label_path)
+        print(f"all clips: {len(df)} clips")
+        
+        # trainとtestをまとめて学習に用いる
+        selected_splits = (["train", "test"] if self.split == "train" else [self.split])
+        
+        # 所望のsplitのデータを取り出し，不要なデータは除外
+        df = df[
+            (df["SEP28k-E"].isin(selected_splits))
+            & (df["NoSpeech"] < 2)
+            & (df["Music"] < 2)
+            & (df["DifficultToUnderstand"] < 2)
+            & (df["PoorAudioQuality"] < 2)
+            & (df["Unsure"] < 2)
+            ].copy()
+        
+        # 5症状およびNoStutteredWordsが1以下のクリップは曖昧であるため除去
+        has_symptom = df[self.symptom_names].ge(2).any(axis=1)
+        has_no_stutter = df["NoStutteredWords"].ge(2)
+        # 症状または無吃音の，少なくとも一方に2票以上あれば採用
+        df = df[has_symptom | has_no_stutter].reset_index(drop=True)
+
+        return df
+
+    def read_wav(self, wav_path: str) -> Dict[str, torch.Tensor]:
+        """Load all features for a clip_id from wav_dir"""
+        features = {}
+        wav, sr = sf.read(wav_path, dtype="float32")
+        
+        if wav.ndim != 1:
+            raise ValueError("モノラル音声を指定してください")
+
+        if sr != self.sampling_rate:
+            raise ValueError("sampling_rateが異なります")
+        features["input_values"] = torch.from_numpy(wav).unsqueeze(0) #要検討
+        return features
+
+    def process_label(self, clip_data) -> Dict[str, int]:
+        """process labels from dataframe row"""
+        active_symptoms = [
+            name for name in self.symptom_names 
+            if name in clip_data and not pd.isna(clip_data[name]) and clip_data[name] >= 2
+        ]
+        
+        has_symptom = bool(active_symptoms)
+        no_stutter_votes = clip_data["NoStutteredWords"]
+        has_no_stutter = (no_stutter_votes) >= 2
+        
+        if not has_symptom and not has_no_stutter:
+            raise ValueError("症状，無症状ともに2票未満の曖昧なクリップです")
+        
+        
+        if self.classification_task == "multilabel":
+            labels = {name: int(name in active_symptoms) for name in self.symptom_names}
+            labels["any"] = int(has_symptom)
+        
+        elif self.classification_task == "multiclass":
+            labels = {
+                name: 0 for name in [*self.symptom_names, "no-stutter", "other"] 
+            }
+            
+            if len(active_symptoms) >= 2:
+                target = "other"
+            elif len(active_symptoms) == 1:
+                target = active_symptoms[0] # 先頭を取り出す(一つしか入ってないから)
+            else:
+                target = "no-stutter"
+            
+            labels[target] = 1
+            
+        elif self.classification_task == "binaryclass":
+            labels = {
+                "any": int(has_symptom),
+                "no-stutter": int(not has_symptom)
+            }
+        
+        else:
+            raise ValueError("定義されていないclassification taskです")
+        
+        return labels
+
+    def __len__(self) -> int:
+        return len(self.data_df)
+
+    def get_item_paths(self, show, epid, clipid):
+        """Get paths for show, epid, clipid"""
+        """sep-28kは二つのディレクトリにまたがって入っているので二つのパスを返す"""
+        return {
+            "sep-28k": f"/work/abelab5/k_fuji/sep-28k/clips/{show}/{epid}/{show}_{epid}_{clipid}.wav",
+            "sep-28k-E": f"/work/abelab5/k_fuji/sep-28k-E/data/{show}/{show}_{epid}_{clipid}.wav"
+        }
+
+    def extract_audio_features(self, sep_28k_path, sep_28k_E_path):
+        """sep_28k_pathとsep-28k-Eの音声を検索"""
+        """1: 音声ファイルが存在するかを確認"""
+        """2: 存在する場合，0サンプルでない方のpathから音声を抽出する"""
+        """音声ファイルが存在しない場合や，0サンプルの音声ファイルしか存在しない場合，0埋めされたtensorを返す"""
+        for path in (sep_28k_path, sep_28k_E_path):
+                if not os.path.isfile(path):
+                    continue
+
+                audio = self.read_wav(path)
+                values = audio["input_values"]  # (1, サンプル数)
+
+                if values.shape[-1] == 3 * self.sampling_rate: # 3秒音声になっているならそのまま返す
+                    return audio
+
+        # どちらも存在しない、またはサンプル数が3秒未満であれば3秒のゼロ音声
+        return {"input_values": torch.zeros(1, 3 * self.sampling_rate, dtype=torch.float32)}
+
+    def __getitem__(self, idx):
+        clip_data = self.data_df.iloc[idx]
+        
+        show = clip_data["Show"]
+        epid = int(clip_data["EpId"])
+        clipid = int(clip_data["ClipId"])
+
+        paths = self.get_item_paths(show, epid, clipid)
+        
+        audio = self.extract_audio_features(paths["sep-28k"], paths["sep-28k-E"])
+        label = self.process_label(clip_data)
+        return {
+            "clip_id": clipid,
+            "audio_inputs": audio, # dict[str, tensor]
+            **label,
+        }
 
     
 class FrameLevelAudioDataset(AudioDataset):
     def __init__(self, 
                  root, 
-                 annotator, 
-                 sampling_rate = 16000, 
+                 annotator,
+                 symptom_names,
+                 sampling_rate = 16000,
                  split = "train", 
-                 label = None, 
+                 label = None,
+                 do_single_label = False,
+                 do_speaker_adaptation = False,
+                 classification_task = "multilabel",
                  feature_extractor: str = "wav2vec2",
                  pretrained_model_name: str = 'facebook/wav2vec2-base-960h',
                  **kwargs):
@@ -149,11 +310,101 @@ class FrameLevelAudioDataset(AudioDataset):
         self.feature_extractor = feature_extractor
         self.pretrained_model_name = pretrained_model_name
         self.target_sampling_rate = sampling_rate
+        self.classification_task = classification_task
+        self.symptom_names = symptom_names
+        self.do_speaker_adaptation = do_speaker_adaptation
+        
+        # multilabelかmulticlassで正解ラベルが変わる
+        if self.classification_task == "multilabel":
+            self.labels = ['P', 'B', 'SR', 'ISR', 'MUR', 'any']
+        if self.classification_task == "multiclass":
+            self.labels = ['P', 'B', 'SR', 'ISR', 'MUR', 'no-stutter', 'other']
+        if self.classification_task == "binaryclass":
+            self.labels = ["any", "no-stutter"]
+            
+        self.do_single_label = do_single_label
+        if self.do_single_label == True:
+            print("used do_single_label")
+            self.data_df = self.prep_df_single()
+            self.clips = self.data_df['clip_id'].reset_index(drop=True)
+        else: print("not used do_single_label")
 
+        # _getitem_で重複して行を取得しないために，clipsは一意な行のみを取得している
+        self.clips = (self.data_df["clip_id"].drop_duplicates().reset_index(drop=True))
+
+    def prep_df(self):
+        label_path = os.path.join(self.root, "labels", f"{self.annotator}.csv")
+        df = pd.read_csv(label_path)
+        df = df[df['split'] == self.split].reset_index(drop=True)
+
+        if self.split == "test":
+            return df
+        
+        if self.label:
+    
+            df_majority = df[df[self.label]==0]
+            df_minority = df[df[self.label]==1]
+
+            df_minority_upsampled = resample(df_minority,
+                                                replace=True,    
+                                                n_samples=len(df_majority),    
+                                                random_state=42)
+            df_upsampled = pd.concat([df_majority, df_minority_upsampled])
+            df_upsampled = df_upsampled.sample(frac=1, random_state=42).reset_index(drop=True)
+
+            return df_upsampled
+        else:
+            return df
+        
+        
+    def prep_df_single(self):
+        # prep_dfに単ラベル分類を行う際の処理を追加
+        # 行単位でparseし，症状が一種類かどうかを判定
+        
+        
+        if self.classification_task == "multiclass" or self.classification_task == "binaryclass":
+            raise ValueError("multiclass分類タスクでは，複数ラベルデータを引き受けるのが前提のため，prep_df_singleを用いるのは適切ではありません．")
+        
+        label_path = os.path.join(self.root, "labels", f"{self.annotator}.csv")
+        df = pd.read_csv(label_path)
+        # 任意のsplitのデータのみを取り出してラベルを取り出す
+        df = df[df['split'] == self.split].reset_index(drop=True)
+        
+        if (self.split == "test") or (self.split == "val") or (self.split == "train"):
+            label_list = [label for label in self.labels if label != "any"] # "any"のみを除外
+            single_label_df = df[
+                df[label_list].sum(axis=1) == 1
+            ]
+            return single_label_df
+        
+        if self.label: # 単ラベル分類時
+            # labelがtrainで定義されてない場合は遷移しない
+    
+            df_majority = df[df[self.label]==0]
+            df_minority = df[df[self.label]==1]
+
+            df_minority_upsampled = resample(df_minority,
+                                                replace=True,    
+                                                n_samples=len(df_majority),    
+                                                random_state=42)
+            df_upsampled = pd.concat([df_majority, df_minority_upsampled])
+            df_upsampled = df_upsampled.sample(frac=1, random_state=42).reset_index(drop=True)
+
+            return df_upsampled
+        else:
+            return df
+        
     def __getitem__(self, idx):
+        
+        clip_id = self.clips.iloc[idx]
 
-        clip_id = self.clips[idx]
-        clip_data = self.data_df[self.data_df['clip_id'] == clip_id].iloc[0]
+        # clip_idに含まれる全アノテーション行を参照
+        clip_rows = self.data_df[
+            self.data_df["clip_id"] == clip_id
+        ]
+
+        # ファイル情報はクリップ内で共通なので先頭行を使用
+        clip_data = clip_rows.iloc[0]
         media_file = clip_data['media_file']
         task = clip_data['task']
         audio_path = self.get_item_paths(f"{task}_{media_file}")['audio']
@@ -164,7 +415,7 @@ class FrameLevelAudioDataset(AudioDataset):
             print(f"Audio file not found for clip {clip_id}")
             audio = torch.zeros(1, self.target_sampling_rate)  # Default to empty audio
 
-        label = self.process_annotationlabel(clip_data, self.feature_extractor, self.pretrained_model_name, self.target_sampling_rate) # 強ラベル作成
+        label = self.process_annotationlabel(clip_rows, self.feature_extractor, self.pretrained_model_name, self.target_sampling_rate) # 強ラベル作成
 
         return {
             "clip_id": clip_id,
@@ -172,7 +423,7 @@ class FrameLevelAudioDataset(AudioDataset):
             **label, # 辞書の中身を展開: {"A": ~, "B": ~} -> {"A": ~}, {"B": ~} 
         }
     
-    def process_annotationlabel(self, clip_data, feature_extractor, pretrained_model_name, sr) -> Dict[str, list]:
+    def process_annotationlabel(self, clip_rows, feature_extractor, pretrained_model_name, sr) -> Dict[str, list]:
         """
         Process labels from dataframe row
         データフレームから強ラベルデータを作成
@@ -186,13 +437,15 @@ class FrameLevelAudioDataset(AudioDataset):
             model_config = Wav2Vec2Config.from_pretrained(pretrained_model_name)
         elif feature_extractor == "wavlm":
             model_config = WavLMConfig.from_pretrained(pretrained_model_name)
+        elif feature_extractor == "whisper":
+            # whisperでは時刻フレームのつくり方が異なるため，正解データはwavlmと同じやり方で
+            # 作成することとする．
+            model_config = WavLMConfig.from_pretrained("microsoft/wavlm-large")
         else:
             raise ValueError(f"Unknown feature extractor: {feature_extractor}")
         kernel_samples, stride_samples = self.calc_kernel_stride_samples(model_config.conv_kernel, model_config.conv_stride)
 
-        labels: dict[str, list[int]] = {}
-        annotation_start = clip_data["annotation_start"]
-        annotation_end = clip_data["annotation_end"]
+        clip_data = clip_rows.iloc[0]
         start_time = clip_data["start_time"]
         end_time = clip_data["end_time"]
         clip_duration = (end_time - start_time) # float
@@ -200,29 +453,87 @@ class FrameLevelAudioDataset(AudioDataset):
         num_frames = (clip_samples - kernel_samples) // stride_samples + 1 # 3 sec -> 149frames
         kernel_sec = kernel_samples / sr
         stride_sec = stride_samples / sr
-        
-        # annotationラベルが付与されてなければ，すべてのラベルの時刻フレームラベルを0にする
-        if annotation_start is None or annotation_end is None:
-            for label in self.labels:
-                if label in clip_data and not pd.isna(clip_data[label]):
-                    labels[label] = num_frames * [0] # num frame個分0が格納された0次元リスト
-                else:
-                    raise ValueError(f"予期しない条件分岐が行われました")
 
-        # annotationラベルが付与されていれば，annotation区間に該当する時刻フレームに任意の症状ラベルをつける
+        # 症状名を格納したリストを作成
+        # symptom_names = [name for name in self.labels if name not in ("any", "no-stutter", "other")]
+        symptom_labels = {name: [0] * num_frames for name in self.symptom_names} # 各症状を0行列で初期化
+
+        # 各アノテーション区間を，その行で陽性の症状にだけ割り当てる
+        for _, row in clip_rows.iterrows():
+            annotation_start = row["annotation_start"]
+            annotation_end = row["annotation_end"]
+
+            if pd.isna(annotation_start) or pd.isna(annotation_end):
+                continue
+
+            if annotation_end <= annotation_start: # 開始が終了よりも遅かった場合error出力
+                raise ValueError(
+                    f"Invalid annotation interval: "
+                    f"{annotation_start}, {annotation_end}"
+                )
+
+            interval_labels = self.make_stronglabel(
+                num_frames,
+                start_time,
+                end_time,
+                annotation_start,
+                annotation_end,
+                kernel_sec,
+                stride_sec,
+            )
+            
+            for name in self.symptom_names:
+                if row[name] == 1:
+                    #既存区間とのOR．離れた区間の隙間は埋めない
+                    symptom_labels[name] = [
+                        int(old or new) # old or newで配列の各要素ごとにorをとる
+                        for old, new in zip(symptom_labels[name], interval_labels)
+                    ]
+
+        if self.classification_task == "multilabel":
+            labels = symptom_labels
+            #anyは5症状のフレーム毎のOR
+            labels["any"] = [
+                int(any(values))
+                for values in zip(*(symptom_labels[name] for name in self.symptom_names)) # label[name]は配列，zip()は同じフレームの値をまとめて取り出す
+            ]
+            
+        elif self.classification_task == "multiclass":
+            # 返すラベルは7クラス．各フレームで必ず1クラスだけ陽性とする
+            class_names = [*self.symptom_names, "no-stutter", "other",]
+            labels = {name: [0] * num_frames for name in class_names}
+            
+            for frame_idx in range(num_frames):
+                active_symptoms = [
+                    name for name in self.symptom_names if symptom_labels[name][frame_idx] == 1
+                ] # 陽性のフレームがあるクラスから一フレームだけ取り出す
+
+                if len(active_symptoms) == 0:
+                    target_name = "no-stutter"
+                elif len(active_symptoms) == 1:
+                    target_name = active_symptoms[0]
+                else:
+                    target_name = "other"
+                
+                labels[target_name][frame_idx] = 1
+
+        elif self.classification_task == "binaryclass":
+            any_labels = [
+                int(any(values))
+                for values in zip(*(symptom_labels[name] for name in self.symptom_names))
+            ]
+            labels = {
+                "any": any_labels,
+                "no-stutter": [1 - value for value in any_labels], # no-stutterラベルはanyを反転させたもの
+            }
+
         else:
-            for label in self.labels:
-                if label in clip_data and not pd.isna(clip_data[label]):
-                    if clip_data[label] == 1:
-                        labels[label] = self.make_stronglabel(num_frames, start_time, end_time, annotation_start,annotation_end, kernel_sec, stride_sec)
-                    else: # if clip_data[label] == 0:
-                        labels[label] = num_frames * [0]
-                else:
-                    raise ValueError(f"予期しない条件分岐が行われました")
-
+            raise ValueError(f"Unknown classification_task: {self.classification_task}")
+        
         return labels
     
-    def make_stronglabel(self, num_frames: int,
+    def make_stronglabel(self, 
+                         num_frames: int,
                          start_sec: float,
                          end_sec: float,
                          annotation_start: float,
@@ -321,6 +632,7 @@ class VideoAudioDataset(BaseDataset):
     
 
 def prep_dataset(config: DatasetConfig, 
+                 classification_task: str = "multilabel",
                  split: str = "train", 
                  modality: Optional[str] = 'audio', 
                  feature_extractor: str = "wav2vec2", 
@@ -329,7 +641,17 @@ def prep_dataset(config: DatasetConfig,
     if modality == "audio":
         return AudioDataset(**vars(config), split=split)
     elif modality == "exp_audio":
-        return FrameLevelAudioDataset(**vars(config), split=split, feature_extractor=feature_extractor, pretrained_model_name=pretrained_model_name)
+        return FrameLevelAudioDataset(**vars(config),
+                                      classification_task=classification_task,
+                                      split=split,
+                                      feature_extractor=feature_extractor,
+                                      pretrained_model_name=pretrained_model_name
+                                      )
+    elif modality == "pretrain":
+        return Sep28kAudioDataset(**vars(config),
+                                  classification_task=classification_task,
+                                  split=split,
+                                  )
     elif modality == "video":
         return VideoDataset(**vars(config), split=split)
     elif modality == "multimodal":

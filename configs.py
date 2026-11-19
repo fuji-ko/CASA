@@ -9,6 +9,9 @@ class DatasetConfig:
     annotator: str = 'A1'
     sampling_rate: int = 16000
     label: str = None
+    symptom_names = ["P", "B", "SR", "ISR", "MUR"]
+    do_single_label: bool = False # valとtestで単ラベル分類を実行
+    do_speaker_adaptation: bool = False
     
 
 # model configurations
@@ -26,29 +29,16 @@ class BaseModelConfig:
 class AudioModelConfig(BaseModelConfig):
     feature_extractor: str = "wav2vec2"
     pretrained_model_name: str = "facebook/wav2vec2-base-960h"
+    finetuned_model_path: str = None
     freeze_encoder: bool = True
     freeze_feature_extractor: bool = True
     unfreeze_layers: Optional[List[int]] = None # Optional: 整数リストもしくはNone
     scheduler_warmup_steps: int = 0
-    loss_weights: List[float] = field(default_factory=lambda: [
-        # 0.9,  # SR
-        # 0.7,  # ISR
-        # 0.9,  # MUR
-        # 0.9,  # P
-        # 0.6,  # B
-        1.0,  # any
-    ])
-
-# 実験用configモジュール
-@dataclass # __init__を自動的に作成してくれる
-class MyAudioModelConfig(BaseModelConfig):
-    feature_extractor: str = "wav2vec2"
-    pretrained_model_name: str = "microsoft/wavlm-large"
-    freeze_encoder: bool = True
-    freeze_feature_extractor: bool = True
-    unfreeze_layers: Optional[List[int]] = None
-    scheduler_warmup_steps: int = 0
-    dropout: float = 0.5
+    iou_threshold: int = 0.5
+    classification_task: str = "multilabel"
+    architecture: str = "LSTMSingleHead"
+    do_median_filter: bool = True
+    output_layer: str = "lstm"
     loss_weights: List[float] = field(default_factory=lambda: [
         # 0.9,  # SR
         # 0.7,  # ISR
@@ -101,6 +91,7 @@ class TrainingConfig:
     max_epochs: int = 10
     gradient_clip_val: float = 1.0
     modality: str = "audio"
+    train_encoder: bool = False
 
     # dataset configurations
     dataset_config: DatasetConfig = field(default_factory=DatasetConfig) # revised

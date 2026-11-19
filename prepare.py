@@ -41,9 +41,6 @@ def agg_fn():
         'T': 'max'
     }
 
-def agtgregate_clip_labels(df):
-    result = df.groupby("clip_id").agg(agg_fn())
-
 def load_exclusions(exclusions_path):
 
     exclusions = {}
@@ -435,7 +432,7 @@ def save_annotation_labels(labels_df, output_dir, annotators):
     labels_df = labels_df.reindex(columns=columns)
     label_dir = os.path.join(output_dir, "labels")
     os.makedirs(label_dir, exist_ok=True)
-    
+
     test_df = labels_df[(labels_df["annotator"] == "Gold") & (labels_df["split"] == "test")]
     for annotator in annotators:
         annotator_df = labels_df[
@@ -446,6 +443,7 @@ def save_annotation_labels(labels_df, output_dir, annotators):
             ['task', 'media_file', 'start_time', 'annotation_start', 'annotation_end'],
             kind='stable',
         )
+        combined_df = combined_df.drop_duplicates() # すべての列が同じ行を，最初の一行だけ残して削除
         combined_df.to_csv(os.path.join(label_dir, f'{annotator}.csv'), index=False)
 
     return labels_df
